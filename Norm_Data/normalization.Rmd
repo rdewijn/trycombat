@@ -1,0 +1,564 @@
+---
+title: "Normalization"
+output: html_document
+---
+
+# Pamgene: Testing different normalization methods
+
+## Load packages 
+
+```{r include=FALSE}
+library(tidyverse)
+library(plotly)
+library(lumi)
+library(reshape2)
+```
+
+## Read in the data
+
+```{r include=FALSE}
+raw <- read.csv("C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/cc_cpe_ets.txt", skip = 1)
+```
+
+```{r include=FALSE}
+str(raw)
+```
+
+```{r include=FALSE}
+raw['ArrayID'] <- paste0(raw$Barcode, "_", raw$Array)
+```
+
+Visualize raw data. 
+
+```{r echo=FALSE}
+ggplot(raw, aes(ETS_Identity, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+```
+
+
+### Transform data
+
+```{r include=FALSE}
+# take generalized logarithm (test)
+raw['glog'] <- log2(raw$ETS_Identity + sqrt((raw$ETS_Identity*raw$ETS_Identity +1)))
+# remove negative values
+raw$ETS_Identity[raw$ETS_Identity < 0] <- 0
+# take logarithm
+raw['log'] <- log2(raw$ETS_Identity+1)
+```
+
+Log of all data
+
+```{r echo=FALSE}
+p <-  ggplot(raw, aes(log, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+## Normalize REF samples CC study
+
+### Select data
+
+```{r include=FALSE}
+#Adapt input.mat function
+input.mat = function(df, vcol = "ETS_Identity", ncol = 9){
+  wide <- spread(df, ID, value = vcol)
+  mat <- wide[,-c(1:ncol)] # probes in columns
+  rownames(mat) <- wide$ArrayID
+  anno <- wide[,c(1:ncol)]
+  result = list(X = as.matrix(mat), An = anno)
+}
+```
+
+
+```{r include=FALSE}
+cc.ref.raw = raw %>%
+  select(-one_of('log', 'glog')) %>% 
+  filter(Study == "METHOD-CC") %>%
+  filter(Grouping == "REF") %>% 
+  input.mat()
+
+dim(cc.ref.raw$X)
+class(cc.ref.raw$X)
+dim(cc.ref.raw$An)
+class(cc.ref.raw$An)
+```
+
+New since R.4.0 => matrix always gets class array as well from now on (be careful for this analysis some older R functions struggle with this)
+
+```{r include=FALSE}
+#Remove negative values
+cc.ref.mat.nn <-  cc.ref.raw$X
+cc.ref.mat.nn[cc.ref.mat.nn<0] <- 0
+
+#Take logarithm, offset = 1
+cc.ref.mat.log <- log2(cc.ref.mat.nn +1)
+#cc.ref.mat.glog <- log2(cc.ref.raw$X + sqrt((cc.ref.raw$X*cc.ref.raw$X +1)))
+```
+
+Log of reference data CC study
+
+```{r echo=FALSE}
+p <-  ggplot(melt(cc.ref.mat.log), aes(value, group = Var1)) +
+  stat_density(geom = "line", position = "identity")
+fig <- ggplotly(p)
+fig
+```
+
+### Robust spline
+
+Robust splines on logarithmized data
+
+The robust spline normalization (RSN) algorithm combines the features of quantile and lowess normalization. Shoulds be applied on variance-stabilized data (e.g. vsn/log data).
+
+```{r include=FALSE}
+rsn <- lumi::rsn(t(cc.ref.mat.log))
+```
+
+```{r}
+rsn_long <-  reshape2::melt(rsn)
+colnames(rsn_long) <-  c('Probe', 'ArrayID', 'value_rsn')
+rsn_long <- left_join(rsn_long, cc.ref.raw$An, by = 'ArrayID')
+```
+
+```{r}
+p <- ggplot(rsn_long, aes(value_rsn, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+### Vsn
+
+#### Ref CC
+
+Classic vsn on reference data CC study
+
+```{r include=FALSE}
+vsn::meanSdPlot(t(cc.ref.raw$X))
+dvsn <- vsn::vsn2(t(cc.ref.raw$X)) 
+vsn::meanSdPlot(dvsn)
+```
+
+```{r include=FALSE}
+dvsnm <- dvsn@hx
+```
+
+```{r include=FALSE}
+dvsn_long <-  reshape2::melt(dvsnm)
+colnames(dvsn_long) <-  c('Probe', 'ArrayID', 'value')
+dvsn_long <- left_join(dvsn_long, cc.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsn_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+Outlier array: 650001519_A4
+
+#### Ref CC No Outlier
+
+Repeat procedure without outlier array
+
+```{r include=FALSE}
+cc.ref.raw.no <- cc.ref.raw$X[!rownames(cc.ref.raw$X) %in% c('650001519_A4'), ]
+```
+
+```{r include=FALSE}
+dvsno <- vsn::vsn2(t(cc.ref.raw.no)) 
+vsn::meanSdPlot(dvsno)
+```
+
+```{r include=FALSE}
+dvsnom <- dvsno@hx
+```
+
+```{r include=FALSE}
+dvsno_long <-  reshape2::melt(dvsnom)
+colnames(dvsno_long) <-  c('Probe', 'ArrayID', 'value')
+dvsno_long <- left_join(dvsno_long, cc.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsno_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+#### Ref CPE
+
+```{r include=FALSE}
+cpe.ref.raw = raw %>%
+  select(-one_of('log', 'glog')) %>% 
+  filter(Study == "METHOD-CPE") %>%
+  filter(Grouping == "REF") %>% 
+  input.mat()
+
+dim(cpe.ref.raw$X)
+class(cpe.ref.raw$X)
+dim(cpe.ref.raw$An)
+class(cpe.ref.raw$An)
+```
+
+```{r include=FALSE}
+dvsn <- vsn::vsn2(t(cpe.ref.raw$X)) 
+vsn::meanSdPlot(dvsn)
+```
+
+```{r include=FALSE}
+dvsnm <- dvsn@hx
+```
+
+```{r include=FALSE}
+dvsn_long <-  reshape2::melt(dvsnm)
+colnames(dvsn_long) <-  c('Probe', 'ArrayID', 'value')
+dvsn_long <- left_join(dvsn_long, cpe.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsn_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+Outlier array: 650055110_A2
+
+```{r include=FALSE}
+cpe.ref.raw.no <- cpe.ref.raw$X[!rownames(cpe.ref.raw$X) %in% c('650055110_A2'), ]
+```
+
+```{r include=FALSE}
+dvsno_cpe <- vsn::vsn2(t(cpe.ref.raw.no)) 
+vsn::meanSdPlot(dvsno_cpe)
+```
+
+```{r include=FALSE}
+dvsnom_cpe <- dvsno_cpe@hx
+```
+
+```{r include=FALSE}
+dvsno_cpe_long <-  reshape2::melt(dvsnom_cpe)
+colnames(dvsno_cpe_long) <-  c('Probe', 'ArrayID', 'value')
+dvsno_cpe_long <- left_join(dvsno_cpe_long, cpe.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsno_cpe_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+Conclusion both for the CC Ref and the CPE Ref one 'abbarent'outlier' array.
+Extra filtering steps?
+
+
+### Classic normalisation procedure without outliers
+#### Towards CC
+
+```{r include=FALSE}
+#remove outliers
+all.raw = raw %>%
+  filter(!(ArrayID %in% c('650001519_A4', '650055110_A2'))) %>% 
+  select(-one_of('log', 'glog')) %>% 
+  input.mat()
+
+dim(all.raw$X)
+dim(all.raw$An)
+```
+
+```{r include=FALSE}
+#like classic normalisation procedure used in pipeline, without outliers
+submat_norm_ref <- vsn::vsn2(t(all.raw$X), reference = dvsno)
+vsn::meanSdPlot(submat_norm_ref)
+```
+
+```{r include=FALSE}
+nccr_long <-  reshape2::melt(submat_norm_ref@hx)
+colnames(nccr_long) <-  c('Probe', 'ArrayID', 'value')
+nccr_long <- left_join(nccr_long, all.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(nccr_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+```{r}
+write.csv(nccr_long,"C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/classic_svn_towards_cc_nooutliers.csv")
+```
+
+Adapt lts.quantile parameter (most conservative option)
+
+```{r include=FALSE}
+submat_norm_ref <- vsn::vsn2(t(all.raw$X), reference = dvsno, lts.quantile=0.5)
+vsn::meanSdPlot(submat_norm_ref)
+```
+
+```{r include=FALSE}
+dvsn_long <-  reshape2::melt(submat_norm_ref@hx)
+colnames(dvsn_long) <-  c('Probe', 'ArrayID', 'value')
+dvsn_long <- left_join(dvsn_long, all.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsn_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+<!-- ```{r eval=FALSE, include=FALSE} -->
+<!-- write.csv(dvsn_long,"C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/classic_svn_towards_cc_nooutliers_ltsrobust.csv") -->
+<!-- ``` -->
+
+#### Towards CPE
+
+Repeat classic normalisation procedure but normalize towards reference samples CPE
+
+```{r include=FALSE}
+norm_cpe_ref <- vsn::vsn2(t(all.raw$X), reference = dvsno_cpe)
+vsn::meanSdPlot(norm_cpe_ref)
+```
+
+```{r include=FALSE}
+ncper_long <-  reshape2::melt(norm_cpe_ref@hx)
+colnames(ncper_long) <-  c('Probe', 'ArrayID', 'value')
+ncper_long <- left_join(ncper_long, all.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(ncper_long, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+```{r}
+write.csv(ncper_long,"C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/classic_svn_towards_cpe_nooutliers.csv")
+```
+
+### vsn without affine calibration 
+
+#### CC
+
+```{r include=FALSE}
+dvsnc <- vsn::vsn2(t(cc.ref.raw$X), calib= 'none')
+dvsnc <- dvsnc@hx
+dvsn_longc <-  reshape2::melt(dvsnc)
+colnames(dvsn_longc) <-  c('Probe', 'ArrayID', 'value')
+dvsn_longc <- left_join(dvsn_longc, cc.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(dvsn_longc, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+#### Combine with robust splines
+
+```{r include=FALSE}
+vsnc_rsn <- lumi::rsn(dvsnc)
+vsnc_rsnl <-  reshape2::melt(vsnc_rsn)
+colnames(vsnc_rsnl) <-  c('Probe', 'ArrayID', 'value')
+vsnc_rsnl <- left_join(vsnc_rsnl, cc.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(vsnc_rsnl, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+Outlier array seen before seems to dissapear
+
+
+#### CPE
+
+```{r include=FALSE}
+n <- vsn::vsn2(t(cpe.ref.raw$X), calib = 'none')
+n <- n@hx
+nl <-  reshape2::melt(n)
+colnames(nl) <-  c('Probe', 'ArrayID', 'value')
+nl <- left_join(nl, cpe.ref.raw$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(nl, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour=RunID))
+fig <- ggplotly(p)
+fig
+```
+
+#### VSN without affine + RSN All data
+
+```{r include=FALSE}
+cc.ref.raw.no <- cc.ref.raw$X[!rownames(cc.ref.raw$X) %in% c('650001519_A4'), ]
+```
+
+```{r include=FALSE}
+dvsnc <- vsn::vsn2(t(cc.ref.raw.no), calib= 'none')
+```
+
+```{r include=FALSE}
+norm_vsn_nc <- vsn::vsn2(t(all.raw$X), calib = 'none')
+vsn::meanSdPlot(norm_vsn_nc)
+```
+
+```{r include=FALSE}
+#target array: median normalized array
+norm_vsn_rsn <- lumi::rsn(norm_vsn_nc@hx, targetArray = rowMedians(dvsnc@hx))
+norm_vsn_rsnl <-  reshape2::melt(norm_vsn_rsn)
+colnames(norm_vsn_rsnl) <-  c('Probe', 'ArrayID', 'value')
+norm_vsn_rsnl <- left_join(norm_vsn_rsnl, all.raw$An, by = 'ArrayID')
+```
+
+target array, vsn normalization can be further adapted
+
+```{r echo=FALSE}
+p <- ggplot(norm_vsn_rsnl, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+```{r}
+write.csv(norm_vsn_rsnl,"C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/rsn_svn_towards_cc_nooutliers.csv")
+```
+
+
+### Rank invariant
+
+
+```{r}
+
+#Adapted function from HTqPCR package 
+library(HTqPCR)
+library(affy)
+
+# Macx is now set on log data, can be adapted => solution saturation?
+
+rin <- function (data, norm = "norm.rankinvariant", 
+    rank.type = "pseudo.median", max = 20, 
+    verbose = TRUE)
+{
+    data.norm <- data
+    method <- match.arg(norm, c("quantile", "scale.rankinvariant",
+        "norm.rankinvariant"))
+    if (method %in% c("scale.rankinvariant", "norm.rankinvariant")) {
+        index <- data > max
+        data.max <- data
+        data.max[index] <- NA
+        if (rank.type == "pseudo.median") {
+            ref.data <- apply(data.max, 1, median, na.rm = TRUE)
+        }
+        else if (rank.type == "pseudo.mean") {
+            ref.data <- apply(data.max, 1, mean, na.rm = TRUE)
+        }
+        na.index <- is.na(ref.data)
+        ref.data[na.index] <- 20
+        data.rankinvar <- apply(data, 2, normalize.invariantset,
+            ref = ref.data)
+    }
+    switch(method, quantile = {
+        data.norm <- normalizeQuantiles(data)
+    }, scale.rankinvariant = {
+        ri.genes <- sapply(data.rankinvar, "[[", "i.set")
+        ri.genes[index] <- FALSE
+        ri.genes[na.index, ] <- FALSE
+        ri.count <- rowSums(ri.genes)
+        if (missing(scale.rank.samples)) scale.rank.samples <- ncol(data) -
+            1
+        ri.index <- ri.count >= scale.rank.samples
+        if (sum(ri.index) == 0) stop(paste("No rank invariant probes were found across",
+            scale.rank.samples, "samples"))
+        ri.mean <- colMeans(data[ri.index, , drop = FALSE])
+        ri.scale <- ri.mean/ri.mean[1]
+        data.norm <- t(t(data) * ri.scale)
+        if (verbose) {
+            cat(c("Scaling Ct values\n\tUsing rank invariant probes:",
+                paste(featureNames(q)[ri.index], collapse = " "),
+                "\n"))
+            cat(c("\tScaling factors:", format(ri.scale,
+                digits = 3), "\n"))
+        }
+    }, norm.rankinvariant = {
+        if (verbose) cat("Normalizing Ct values\n\tUsing rank invariant probes:\n")
+        for (i in 1:ncol(data)) {
+            ri.sub <- data.rankinvar[[i]]
+            ri.genes <- ri.sub[["i.set"]]
+            ri.genes[index[, i]] <- FALSE
+            ri.genes[na.index] <- FALSE
+            if (sum(ri.genes) == 0) {
+                warning(paste("\tNo rank invariant genes were found for sample ",
+                  colnames(data)[i], "; sample not normalized\n",
+                  sep = ""))
+                next
+            }
+            if (verbose) cat(paste("\t", colnames(data)[i],
+                ": ", sum(ri.genes), " rank invariant probes\n",
+                sep = ""))
+            data.norm[, i] <- as.numeric(approx(ri.sub$n.curve$y,
+                ri.sub$n.curve$x, xout = data[, i], rule = 2)$y)
+        }
+    })
+
+    data.norm
+}
+```
+
+#### Reference CC 
+```{r include=FALSE}
+cc.raw.log = raw %>%
+  filter(!(ArrayID %in% c('650001519_A4', '650055110_A2'))) %>%
+  select(-one_of('ETS_Identity', 'glog')) %>%
+  filter(Study == "METHOD-CC") %>%
+  filter(Grouping == "REF") %>% 
+  input.mat(vcol = "log")
+```
+
+```{r}
+norm <- rin(t(cc.raw.log$X))
+```
+All reference samples => all probes should be invariant
+Interesting to see which probes do vary (same as probes that are deleted later in pipieline?)
+Effect removing/ not accounting these probes before norm?
+What can be further adapted => reference is now median over all arrays!! (adapt to only reference data)
+
+#### All data
+```{r include=FALSE}
+all.raw.log = raw %>%
+  filter(!(ArrayID %in% c('650001519_A4', '650055110_A2'))) %>%
+  select(-one_of('ETS_Identity', 'glog')) %>%
+  input.mat(vcol = "log")
+```
+
+```{r}
+norm <- rin(t(all.raw.log$X))
+```
+
+```{r include=FALSE}
+norm_inv_l <-  reshape2::melt(norm)
+colnames(norm_inv_l) <-  c('Probe', 'ArrayID', 'value')
+norm_inv_l <- left_join(norm_inv_l, all.raw.log$An, by = 'ArrayID')
+```
+
+```{r echo=FALSE}
+p <- ggplot(norm_inv_l, aes(value, group = ArrayID)) +
+  stat_density(geom = "line", position = "identity", aes(colour = RunID))
+fig <- ggplotly(p)
+fig
+```
+
+```{r}
+write.csv(norm_inv_l,"C:/Users/laure_vansteenbergen/Liz10_3_PamGene/data/rankinvariant_log_towards_median_nooutliers.csv")
+```
+
